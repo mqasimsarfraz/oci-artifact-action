@@ -1,0 +1,63 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+      - name: Run tests
+        run: bash tests/test.sh
+
+  upload:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.upload.outputs.artifact-name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+      - name: Create OCI layout
+        run: |
+          mkdir -p "${RUNNER_TEMP}/layout/blobs/sha256"
+          echo '{"imageLayoutVersion":"1.0.0"}' > "${RUNNER_TEMP}/layout/oci-layout"
+          echo '{"schemaVersion":2,"manifests":[]}' > "${RUNNER_TEMP}/layout/index.json"
+          echo blob > "${RUNNER_TEMP}/layout/blobs/sha256/example"
+      - name: Upload OCI layout
+        id: upload
+        uses: ./
+        with:
+          operation: upload
+          path: ${{ runner.temp }}/layout
+          correlation-id: integration-test
+
+  download:
+    needs: upload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+      - name: Download OCI layout
+        id: download
+        uses: ./
+        with:
+          operation: download
+          correlation-id: integration-test
+      - name: Verify OCI layout
+        env:
+          OCI_LAYOUT: ${{ steps.download.outputs.path }}
+        run: |
+          test -f "${OCI_LAYOUT}/oci-layout"
+          test -f "${OCI_LAYOUT}/index.json"
+          test "$(cat "${OCI_LAYOUT}/blobs/sha256/example")" = blob

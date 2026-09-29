@@ -1,0 +1,148 @@
+name: "Share OCI artifact"
+description: "Share OCI archives and layouts between GitHub Actions jobs using a correlation key."
+author: "Qasim Sarfraz"
+
+branding:
+  icon: "package"
+  color: "blue"
+
+inputs:
+  operation:
+    description: "Operation to perform: upload or download."
+    required: true
+  path:
+    description: "File or directory to upload. Required for the upload operation."
+    required: false
+  correlation-id:
+    description: "Key correlating upload and download steps. Defaults to the current workflow run and attempt."
+    required: false
+  name:
+    description: "Human-readable artifact name prefix."
+    required: false
+    default: "oci-artifact"
+  destination:
+    description: "Directory into which a downloaded payload is extracted. Defaults to a runner temporary directory."
+    required: false
+  retention-days:
+    description: "Number of days to retain an uploaded artifact."
+    required: false
+    default: "1"
+  compression-level:
+    description: "Artifact compression level from 0 to 9. OCI content is usually already compressed, so the default is 0."
+    required: false
+    default: "0"
+  overwrite:
+    description: "Replace an artifact with the same generated name."
+    required: false
+    default: "false"
+  run-id:
+    description: "Workflow run containing the artifact. Leave empty to download from the current run."
+    required: false
+  repository:
+    description: "Repository containing a cross-run artifact, in owner/repository form. Defaults to the current repository."
+    required: false
+  github-token:
+    description: "Token used for cross-run or cross-repository downloads."
+    required: false
+
+outputs:
+  artifact-name:
+    description: "Generated artifact name derived from name and correlation-id."
+    value: ${{ steps.prepare.outputs.artifact-name }}
+  correlation-id:
+    description: "Correlation key used by this invocation."
+    value: ${{ steps.prepare.outputs.correlation-id }}
+  path:
+    description: "Original upload path or extracted download path."
+    value: ${{ steps.result.outputs.path }}
+  artifact-id:
+    description: "GitHub artifact ID for an upload."
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-url:
+    description: "GitHub artifact URL for an upload."
+    value: ${{ steps.upload.outputs.artifact-url }}
+  artifact-digest:
+    description: "GitHub artifact digest for an upload."
+    value: ${{ steps.upload.outputs.artifact-digest }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Prepare artifact transfer
+      id: prepare
+      shell: bash
+      env:
+        INPUT_COMPRESSION_LEVEL: ${{ inputs.compression-level }}
+        INPUT_CORRELATION_ID: ${{ inputs.correlation-id }}
+        INPUT_DESTINATION: ${{ inputs.destination }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_OPERATION: ${{ inputs.operation }}
+        INPUT_OVERWRITE: ${{ inputs.overwrite }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_RETENTION_DAYS: ${{ inputs.retention-days }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+      run: bash "${GITHUB_ACTION_PATH}/scripts/prepare.sh"
+
+    - name: Package OCI payload
+      id: pack
+      if: inputs.operation == 'upload'
+      shell: bash
+      env:
+        SOURCE_PATH: ${{ inputs.path }}
+        STAGING_DIR: ${{ steps.prepare.outputs.staging-dir }}
+      run: bash "${GITHUB_ACTION_PATH}/scripts/pack.sh"
+
+    - name: Upload OCI artifact
+      id: upload
+      if: inputs.operation == 'upload'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: ${{ steps.prepare.outputs.artifact-name }}
+        path: ${{ steps.prepare.outputs.staging-dir }}
+        compression-level: ${{ inputs.compression-level }}
+        retention-days: ${{ inputs.retention-days }}
+        overwrite: ${{ inputs.overwrite }}
+        include-hidden-files: true
+        if-no-files-found: error
+
+    - name: Download OCI artifact from current run
+      if: inputs.operation == 'download' && inputs.run-id == ''
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: ${{ steps.prepare.outputs.artifact-name }}
+        path: ${{ steps.prepare.outputs.staging-dir }}
+
+    - name: Download OCI artifact from another run
+      if: inputs.operation == 'download' && inputs.run-id != ''
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: ${{ steps.prepare.outputs.artifact-name }}
+        path: ${{ steps.prepare.outputs.staging-dir }}
+        github-token: ${{ inputs.github-token }}
+        repository: ${{ steps.prepare.outputs.repository }}
+        run-id: ${{ inputs.run-id }}
+
+    - name: Extract OCI payload
+      id: unpack
+      if: inputs.operation == 'download'
+      shell: bash
+      env:
+        DESTINATION: ${{ steps.prepare.outputs.destination }}
+        STAGING_DIR: ${{ steps.prepare.outputs.staging-dir }}
+      run: bash "${GITHUB_ACTION_PATH}/scripts/unpack.sh"
+
+    - name: Set result
+      id: result
+      shell: bash
+      env:
+        DOWNLOAD_PATH: ${{ steps.unpack.outputs.path }}
+        OPERATION: ${{ inputs.operation }}
+        UPLOAD_PATH: ${{ steps.pack.outputs.path }}
+      run: |
+        if [ "${OPERATION}" = upload ]; then
+          echo "path=${UPLOAD_PATH}" >> "${GITHUB_OUTPUT}"
+        else
+          echo "path=${DOWNLOAD_PATH}" >> "${GITHUB_OUTPUT}"
+        fi
